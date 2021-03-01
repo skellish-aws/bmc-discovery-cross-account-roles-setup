@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  This template creates required cross-account role permissions for BMC Helix Discovery to scan account resources. 
+  Supports both use of AWS Organizations and non-AWS Organization environments account.
+  **WARNING** This template creates AWS resources. You will be billed for the AWS
+  resources used if you create a stack from this template.
+Parameters:
+  MgmtAccountId:
+    AllowedPattern: "[0-9]+"
+    Description: The 12 digit AWS account number to grant access to.
+    MaxLength: "12"
+    MinLength: "12"
+    Type: String
+
+  OrganizationId:
+    AllowedPattern: "^$|^o-[a-z0-9]{10,32}$"
+    Description: When using AWS Organizations and run in the management account, provide the AWS Organization ID, otherwise leave empty.
+    ConstraintDescription:  requires "o-" followed by from 10 to 32 lowercase letters or digits.
+    Type: String
+
+Conditions:
+  IsMgmtAccount: !Equals
+    - !Ref MgmtAccountId
+    - !Ref AWS::AccountId
+  IsMemberAccount: !Not [Condition: IsMgmtAccount]
+  HaveOrganizationId: !Not 
+    - !Equals 
+      - !Ref OrganizationId
+      - ''
+Resources:
+  bmcDiscoveryROScanIAMGroup:
+    Condition: IsMgmtAccount
+    Type: AWS::IAM::Group
+    Properties:
+      GroupName: bcmDiscoveryROScanIAMGroup
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/SecurityAudit"
+        - "arn:aws:iam::aws:policy/IAMReadOnlyAccess"
+        - "arn:aws:iam::aws:policy/AmazonESReadOnlyAccess"
+        - "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess"
+        - "arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess"
+        - "arn:aws:iam::aws:policy/AWSOrganizationsReadOnlyAccess"
+      Policies:
+        - PolicyName: bmcDiscoveryROScanTrustPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - arn:aws:iam::*:role/bmcDiscoveryROScanTrustRole
+                Condition: !If 
+                  - HaveOrganizationId
+                  - 
+                      StringEquals: 
+                        aws:PrincipalOrgID:
+                        - !Ref OrganizationId
+                  - !Ref AWS::NoValue
+
+  bmcDiscoveryOutpostUser:
+    Condition: IsMgmtAccount
+    Type: AWS::IAM::User
+    Properties:
+      UserName: discoveryoutpost
+      Groups:
+        - !Ref bmcDiscoveryROScanIAMGroup
+
+  bmcDiscoveryROScanTrustRole:
+    Condition: IsMemberAccount
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: bmcDiscoveryROScanTrustRole
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${MgmtAccountId}:root"
+      Path: /
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/SecurityAudit"
+        - "arn:aws:iam::aws:policy/IAMReadOnlyAccess"
+        - "arn:aws:iam::aws:policy/AmazonESReadOnlyAccess"
+        - "arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess"
+        - "arn:aws:iam::aws:policy/AmazonRDSReadOnlyAccess"
+
+  bmcDiscoveryROScanPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: BMC-Discovery-RO-Scan
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:getPolicy
+              - iam:getPolicyVersion
+              - iam:getUser
+              - iam:listAccessKeys
+              - iam:listAttachedRolePolicies
+              - iam:listAttachedUserPolicies
+              - iam:listAttachedGroupPolicies
+              - iam:listEntitiesForPolicy
+              - iam:listPolicies
+              - iam:listRoles
+              - iam:listUserPolicies
+              - iam:ListGroupPolicies
+              - iam:ListGroupsForUser
+            Resource:
+              - arn:aws:iam::*:policy/*
+              - arn:aws:iam::*:user/*
+          - Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+              - ec2:DescribeInstanceTypes
+              - rds:Describe
+              - cloudwatch:GetMetricData
+              - cloudwatch:ListMetrics
+            Resource: "*"
+      Roles: !If 
+        - IsMemberAccount
+        - - !Ref bmcDiscoveryROScanTrustRole
+        - !Ref AWS::NoValue
+      Groups: !If 
+        - IsMgmtAccount
+        - - !Ref bmcDiscoveryROScanIAMGroup
+        - !Ref AWS::NoValue
+
+Outputs:
+  RoleARN:
+    Condition: IsMemberAccount
+    Description: The ARN of the role that can be assumed by the other account.
+    Value: !GetAtt bmcDiscoveryROScanTrustRole.Arn
